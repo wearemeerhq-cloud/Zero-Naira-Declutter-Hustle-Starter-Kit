@@ -6,6 +6,21 @@ interface AdminPinLockProps {
   onBack: () => void;
 }
 
+// One-way SHA-256 hash of the authorized security PIN (avoids plaintext PIN exposure)
+const AUTH_HASH = '6a8328b1da171410d67e3c0eb4c1904bfc18a4e0c4ef6e76d5bdaab8ae7a72b7';
+
+async function computeSha256(text: string): Promise<string> {
+  try {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(text);
+    const hashBuffer = await window.crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  } catch (e) {
+    return '';
+  }
+}
+
 export const AdminPinLock: React.FC<AdminPinLockProps> = ({ onSuccess, onBack }) => {
   const [pin, setPin] = useState<string[]>(['', '', '', '']);
   const [error, setError] = useState<string>('');
@@ -24,6 +39,27 @@ export const AdminPinLock: React.FC<AdminPinLockProps> = ({ onSuccess, onBack })
     inputRefs[0].current?.focus();
   }, []);
 
+  const grantAccess = (token?: string) => {
+    setIsSuccess(true);
+    if (token) {
+      sessionStorage.setItem('zero_naira_admin_token', token);
+    }
+    sessionStorage.setItem('zero_naira_admin_unlocked', 'true');
+    setTimeout(() => {
+      onSuccess();
+    }, 400);
+  };
+
+  const rejectAccess = (errMsg: string) => {
+    setError(errMsg);
+    setIsShaking(true);
+    setTimeout(() => {
+      setIsShaking(false);
+      setPin(['', '', '', '']);
+      inputRefs[0].current?.focus();
+    }, 600);
+  };
+
   const handleVerifyPin = async (fullPin: string) => {
     if (fullPin.length !== 4 || isVerifying) return;
 
@@ -31,6 +67,7 @@ export const AdminPinLock: React.FC<AdminPinLockProps> = ({ onSuccess, onBack })
     setError('');
 
     try {
+      // 1. Attempt server-side verification first
       const response = await fetch('/api/admin/verify-pin', {
         method: 'POST',
         headers: {
@@ -39,32 +76,44 @@ export const AdminPinLock: React.FC<AdminPinLockProps> = ({ onSuccess, onBack })
         body: JSON.stringify({ pin: fullPin })
       });
 
-      const data = await response.json();
-
-      if (response.ok && data.success) {
-        setIsSuccess(true);
-        if (data.token) {
-          sessionStorage.setItem('zero_naira_admin_token', data.token);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) {
+          grantAccess(data.token);
+          return;
+        } else {
+          rejectAccess(data.error || 'Incorrect 4-digit PIN. Please try again.');
+          return;
         }
-        sessionStorage.setItem('zero_naira_admin_unlocked', 'true');
-        setTimeout(() => {
-          onSuccess();
-        }, 400);
+      } else if (response.status === 401) {
+        const data = await response.json().catch(() => ({}));
+        rejectAccess(data.error || 'Incorrect 4-digit PIN. Please try again.');
+        return;
+      }
+      
+      // If server returns 404 (e.g. static hosting on Vercel/Netlify/GitHub Pages)
+      const inputHash = await computeSha256(fullPin);
+      if (inputHash === AUTH_HASH) {
+        grantAccess();
+        return;
       } else {
-        setError(data.error || 'Incorrect 4-digit PIN. Please try again.');
-        setIsShaking(true);
-        setTimeout(() => {
-          setIsShaking(false);
-          setPin(['', '', '', '']);
-          inputRefs[0].current?.focus();
-        }, 600);
+        rejectAccess('Incorrect 4-digit PIN. Please try again.');
+        return;
       }
     } catch (err) {
-      setError('Unable to verify PIN. Check your connection.');
-      setIsShaking(true);
-      setTimeout(() => {
-        setIsShaking(false);
-      }, 600);
+      // 2. Cryptographic fallback if backend server is unreachable (static deployment or offline)
+      try {
+        const inputHash = await computeSha256(fullPin);
+        if (inputHash === AUTH_HASH) {
+          grantAccess();
+          return;
+        } else {
+          rejectAccess('Incorrect 4-digit PIN. Please try again.');
+          return;
+        }
+      } catch (fallbackErr) {
+        rejectAccess('Incorrect 4-digit PIN. Please try again.');
+      }
     } finally {
       setIsVerifying(false);
     }
