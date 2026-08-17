@@ -1,0 +1,6 @@
+{
+  "name": "Zero-Naira Hustle Starter Kit",
+  "description": "Free personalized starter kit builder for the Zero-Naira Declutter Hustle methodology.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
